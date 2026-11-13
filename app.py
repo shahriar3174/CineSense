@@ -18,6 +18,7 @@ import streamlit as st
 from poc_recommender import (
     DATA_FILE,
     LARGE_CATALOG,
+    KAGGLE_CATALOG,
     CatalogError,
     CineSenseError,
     MissingSelectionError,
@@ -25,6 +26,7 @@ from poc_recommender import (
     NoEligibleResultsError,
     load_movies,
     recommend,
+    shared_attributes,
 )
 
 # ── Page configuration ────────────────────────────────────────────────
@@ -52,16 +54,40 @@ except CatalogError:
 # ── AC-5: labeled input / AC-4: keyboard-accessible selectbox ────────
 st.subheader("Select a Movie", anchor="select-movie")
 
-using_tmdb = DATA_FILE == LARGE_CATALOG
-catalog_name = "TMDB 5000" if using_tmdb else "sample catalog"
+using_kaggle = DATA_FILE == KAGGLE_CATALOG
+catalog_name = {
+    KAGGLE_CATALOG: "Kaggle TMDB",
+    LARGE_CATALOG: "TMDB 5000",
+}.get(DATA_FILE, "sample catalog")
 st.caption(f"Catalog: {len(movies):,} movies ({catalog_name}).")
-if using_tmdb:
-    st.caption("Data from [TMDB](https://www.themoviedb.org/). This product uses the TMDB API but is not endorsed or certified by TMDB.")
+if using_kaggle:
+    st.caption("Source: [TMDB Movies on Kaggle](https://www.kaggle.com/datasets/asaniczka/tmdb-movies-dataset-2023-930k-movies).")
+elif DATA_FILE == LARGE_CATALOG:
+    st.caption("Data from [TMDB](https://www.themoviedb.org/).")
+
+options = movies
+if using_kaggle:
+    query = st.text_input("Search movie titles", placeholder="e.g. The Matrix").strip()
+    options = movies.iloc[:0]
+    if len(query) >= 2:
+        matches = movies["title"].str.contains(query, case=False, regex=False)
+        options = movies.loc[matches, ["movie_id", "title", "year"]].head(100)
+        if options.empty:
+            st.info("No matching titles. Try another search.")
+        elif matches.sum() > len(options):
+            st.caption("Showing the first 100 matches. Type more to narrow your search.")
+    else:
+        st.caption("Type at least two characters to find a movie.")
 
 labels = {
     row.movie_id: f"{row.title} ({row.year or 'year unknown'})"
-    for row in movies.itertuples()
+    for row in options.itertuples()
 }
+feature_description = (
+    "genres, keywords, and plot text"
+    if using_kaggle
+    else "genres, keywords, cast, director, and plot text"
+)
 movie_id = st.selectbox(
     "Movie title",
     options=list(labels),
@@ -160,6 +186,9 @@ if get_recs:
         f"based on **{labels[movie_id]}**:"
     )
 
+    seed = movies[movies["movie_id"] == movie_id].iloc[0]
+    field_names = {"genres": "Genres", "keywords": "Keywords",
+                      "cast": "Cast", "director": "Director"}
     for rank, (_, movie) in enumerate(results.iterrows(), start=1):
         genres_display = movie["genres"].replace("|", ", ")
         score_pct = f"{movie['similarity'] * 100:.1f}"
@@ -176,9 +205,23 @@ if get_recs:
                 f"**Similarity score:** {movie['similarity']:.3f} "
                 f"({score_pct} %)"
             )
+            st.markdown(f"**Overview:** {movie['overview'] or 'No overview available.'}")
+            st.markdown(
+                f"**Director:** {movie['director'] or 'Unknown'}  \n"
+                f"**Cast:** {movie['cast'].replace('|', ', ') or 'Unknown'}  \n"
+            )
+
+            shared = shared_attributes(seed, movie)
+            if shared:
+                parts = []
+                for field, values in shared.items():
+                    text = values if isinstance(values, str) else ", ".join(values)
+                    parts.append(f"**{field_names[field]} in common:** {text}")
+                st.markdown("**Shared attributes with your selected movie:**  \n" + "  \n".join(parts))
+            else:
+                st.markdown("**Why it matched:** overall content similarity, but no specific genres, keywords, cast, or director in common.")
             st.caption(
-                "Similarity is based on shared genres, keywords, cast, "
-                "director, and plot text — it is not a quality rating or "
+                f"Similarity is based on shared {feature_description} — it is not a quality rating or "
                 "guarantee of enjoyment."
             )
 
@@ -196,8 +239,8 @@ st.divider()
 with st.expander("ℹ️ About CineSense", expanded=False):
     st.markdown(
         "**How it works:**  \n"
-        "CineSense combines each movie's genres, keywords, cast, director, "
-        "and plot overview into a text profile, converts profiles to "
+        f"CineSense combines each movie's {feature_description} into a text profile, "
+        "converts profiles to "
         "[TF-IDF](https://en.wikipedia.org/wiki/Tf%E2%80%93idf) vectors, "
         "and ranks other movies by "
         "[cosine similarity](https://en.wikipedia.org/wiki/Cosine_similarity). "
@@ -205,8 +248,8 @@ with st.expander("ℹ️ About CineSense", expanded=False):
         "prediction of personal enjoyment.\n\n"
         "**Dataset:**  \n"
         f"Currently using the {catalog_name} with "
-        f"**{len(movies)}** movies included in the repository. "
-        "No API key, external download, or personal viewing history "
+        f"**{len(movies):,}** movies. "
+        "No API key or personal viewing history "
         "is used.\n\n"
         "**Keyboard navigation:**  \n"
         "All controls — the movie selector, year filters, the "

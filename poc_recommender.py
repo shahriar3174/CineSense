@@ -4,7 +4,9 @@
 from pathlib import Path
 import argparse
 from functools import lru_cache
+from random import seed
 
+import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -12,7 +14,11 @@ from sklearn.metrics.pairwise import cosine_similarity
 DATA_DIR = Path(__file__).parent / "data"
 LARGE_CATALOG = DATA_DIR / "movies_tmdb.csv"
 SAMPLE_CATALOG = DATA_DIR / "movies_sample.csv"
-DATA_FILE = LARGE_CATALOG if LARGE_CATALOG.exists() else SAMPLE_CATALOG
+KAGGLE_CATALOG = DATA_DIR / "movies_tmdb_kaggle.csv.gz"
+DATA_FILE = next(
+    (path for path in (KAGGLE_CATALOG, LARGE_CATALOG) if path.exists()),
+    SAMPLE_CATALOG,
+)
 
 # ---------------------------------------------------------------------------
 # Custom exception hierarchy — gives the UI layer enough context to show
@@ -183,9 +189,12 @@ def _read_catalog(path: Path | None = None) -> pd.DataFrame:
     return movies
 
 
-def _fit_vectors(movies: pd.DataFrame):
+def _fit_vectors(movies: pd.DataFrame, *, large: bool = False):
     try:
-        return TfidfVectorizer(stop_words="english").fit_transform(movies["features"])
+        vectorizer = TfidfVectorizer(stop_words="english")
+        if large:
+            vectorizer.set_params(dtype=np.float32, min_df=3)
+        return vectorizer.fit_transform(movies["features"])
     except ValueError as exc:
         raise NoUsableFeaturesError("The catalog has no usable words to compare.") from exc
 
@@ -194,17 +203,30 @@ def _fit_vectors(movies: pd.DataFrame):
 def _catalog_and_vectors():
     """Load the active catalog and build TF-IDF once per process."""
     movies = _read_catalog()
-    return movies, _fit_vectors(movies)
+    return movies, _fit_vectors(movies, large=DATA_FILE == KAGGLE_CATALOG)
 
 
 def load_movies(path: Path | None = None) -> pd.DataFrame:
     """Return a copy of the active catalog, or validate an explicit CSV."""
     if path is not None:
         movies = _read_catalog(path)
-        _fit_vectors(movies)
+        _fit_vectors(movies, large=path.resolve() == KAGGLE_CATALOG.resolve())
         return movies
     return _catalog_and_vectors()[0].copy()
 
+
+def shared_attributes(seed, other) -> dict:
+    """Return the genres, keywords, cast, and director two movies have in common."""
+    shared = {}
+    for field in ["genres", "keywords", "cast"]:
+        seed_values = set(seed[field].split("|")) - {""}
+        other_values = set(other[field].split("|")) - {""}
+        common = seed_values.intersection(other_values)
+        if common:
+            shared[field] = sorted(common)
+    if seed["director"] and seed["director"] == other["director"]:
+        shared["director"] = seed["director"]
+    return shared
 
 def recommend(
     title: str | None = None,
@@ -234,47 +256,31 @@ def recommend(
         raise ValueError(f"More than one movie is titled {title!r}; select its movie ID.")
 
     selected_index = matches[0]
-    scores = cosine_similarity(vectors[selected_index], vectors).flatten()
-
-    # Filter eligible movies by release year.
-    years = pd.to_numeric(movies["year"], errors="coerce")
+    if DATA_FILE == KAGGLE_CATALOG:
+        # TF-IDF rows already have unit length, so their dot product is cosine similarity.
+        scores = (vectors @ vectors[selected_index].T).toarray().ravel()
+    else:
+        scores = cosine_similarity(vectors[selected_index], vectors).ravel()
+    eligible = scores > 0
+    eligible[selected_index] = False
 
     has_year_filter = min_year is not None or max_year is not None
-    eligible_indices = []
+    if has_year_filter:
+        years = pd.to_numeric(movies["year"], errors="coerce").to_numpy()
+        if min_year is not None:
+            eligible &= years >= min_year
+        if max_year is not None:
+            eligible &= years <= max_year
 
-    for index in range(len(movies)):
-        if index == selected_index:
-            continue
-
-        if scores[index] <= 0:
-            continue
-
-        year = years.iloc[index]
-
-        if has_year_filter:
-            if pd.isna(year):
-                continue
-
-        if min_year is not None and year < min_year:
-            continue
-
-        if max_year is not None and year > max_year:
-            continue
-
-        eligible_indices.append(index)
-
-    # --- AC-2: no eligible results ---
-    if not eligible_indices:
+    eligible_indices = np.flatnonzero(eligible)
+    if not eligible_indices.size:
         raise NoEligibleResultsError(has_year_filter=has_year_filter)
 
-    # Rank only eligible movies, then select the top results.
-    best_indices = sorted(
-        eligible_indices,
-        key=lambda index: (-scores[index], index)
-    )[:limit]
+    order = np.argsort(-scores[eligible_indices], kind="stable")
+    best_indices = eligible_indices[order[:limit]]
 
     results = movies.loc[
-        best_indices, ["title", "year", "genres"]
+        best_indices, ["title", "year", "genres", "movie_id", "keywords", "cast", "director", "overview"]
     ].copy()
 
     results["similarity"] = scores[best_indices].round(3)
@@ -290,9 +296,10 @@ def main() -> None:
     parser.add_argument(
         "title",
         nargs="?",
-        default="The Matrix"
+        help="Movie title (defaults to The Matrix)"
     )
 
+    parser.add_argument("--movie-id", help="Select a movie by its catalog ID")
     parser.add_argument("--min-year", type=int)
     parser.add_argument("--max-year", type=int)
 
@@ -300,18 +307,25 @@ def main() -> None:
 
     try:
         results = recommend(
-            args.title,
+            title,
             min_year=args.min_year,
-            max_year=args.max_year
+            max_year=args.max_year,
+            movie_id=movie_id,
         )
     except ValueError as error:
         parser.error(str(error))
 
-    print(f"\nCineSense recommendations for {args.title}:\n")
+    print(f"\nCineSense recommendations for {args.movie_id or title}:\n")
 
     if results.empty:
         print("No matching recommendations found.")
         return
+
+    if len(results) < 5:
+        print(
+            f"Only {len(results)} recommendation(s) found "
+            f"for {args.title}."
+        )
 
     for number, movie in results.iterrows():
         print(
