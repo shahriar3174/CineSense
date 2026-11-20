@@ -3,20 +3,65 @@
 
 from pathlib import Path
 import argparse
+import hashlib
+import json
+import shutil
+import tempfile
+from threading import Lock
+import zipfile
 from functools import lru_cache
 from random import seed
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from scipy.sparse import csr_matrix
 
 DATA_DIR = Path(__file__).parent / "data"
 KAGGLE_CATALOG = DATA_DIR / "movies_tmdb_kaggle.csv.gz"
 DATA_FILE = KAGGLE_CATALOG
+VECTOR_FILE = DATA_DIR / "tmdb_vectors.npz"
+VECTOR_MANIFEST = DATA_DIR / "tmdb_vectors.json"
+_INDEX_LOCK = Lock()
+
+
+def file_sha256(path: Path) -> str:
+    """Hash a file without loading it into memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+
+def load_prepared_vectors(path: Path, checksum: str):
+    """Map the prepared sparse arrays from disk instead of keeping copies in RAM."""
+    directory = Path(tempfile.gettempdir()) / "cinesense-tfidf" / checksum
+    with _INDEX_LOCK:
+        directory.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path) as archive:
+            shape = tuple(np.load(archive.open("shape.npy"), allow_pickle=False))
+            for name in ("data.npy", "indices.npy", "indptr.npy"):
+                destination = directory / name
+                if destination.exists() and destination.stat().st_size == archive.getinfo(name).file_size:
+                    continue
+                temporary = destination.with_suffix(".tmp")
+                try:
+                    with archive.open(name) as source, temporary.open("wb") as target:
+                        shutil.copyfileobj(source, target, length=1024 * 1024)
+                    temporary.replace(destination)
+                finally:
+                    temporary.unlink(missing_ok=True)
+    arrays = [np.load(directory / name, mmap_mode="r", allow_pickle=False)
+              for name in ("data.npy", "indices.npy", "indptr.npy")]
+    return csr_matrix(tuple(arrays), shape=shape, copy=False)
+
 
 # ---------------------------------------------------------------------------
-# Custom exception hierarchy — gives the UI layer enough context to show
+# Custom exception hierarchy â€” gives the UI layer enough context to show
 # specific, actionable recovery messages (AC-1 and AC-2).
 # ---------------------------------------------------------------------------
 
@@ -108,7 +153,7 @@ def _validate_catalog(df: pd.DataFrame, source: str) -> pd.DataFrame:
             "Expected columns: "
             f"{', '.join(sorted(_REQUIRED_COLUMNS))}."
         )
-    # Drop rows that have no title — they cannot be selected.
+    # Drop rows that have no title â€” they cannot be selected.
     df = df.dropna(subset=["title"])
     df = df[df["title"].str.strip().astype(bool)]
     if df.empty:
@@ -124,7 +169,7 @@ def _validate_catalog(df: pd.DataFrame, source: str) -> pd.DataFrame:
     return df.assign(movie_id=ids)
 
 
-def _read_catalog(path: Path | None = None) -> pd.DataFrame:
+def _read_catalog(path: Path | None = None, *, build_features: bool = True) -> pd.DataFrame:
     """Load and validate the movie catalog.
 
     Parameters
@@ -153,7 +198,14 @@ def _read_catalog(path: Path | None = None) -> pd.DataFrame:
         )
 
     try:
-        movies = pd.read_csv(source, dtype=str)
+        if source.resolve() == KAGGLE_CATALOG.resolve():
+            # Arrow strings and bounded CSV chunks avoid Python objects for millions of cells.
+            chunks = pd.read_csv(
+                source, dtype="string[pyarrow]", keep_default_na=False, chunksize=25000
+            )
+            movies = pd.concat(chunks, ignore_index=True)
+        else:
+            movies = pd.read_csv(source, dtype=str)
     except pd.errors.EmptyDataError as exc:
         raise EmptyCatalogError("The movie catalog contains no rows.") from exc
     except (OSError, UnicodeError, pd.errors.ParserError) as exc:
@@ -163,6 +215,9 @@ def _read_catalog(path: Path | None = None) -> pd.DataFrame:
 
     movies = movies.fillna("")
     movies = _validate_catalog(movies, str(source))
+
+    if not build_features:
+        return movies
 
     # Build the combined text-feature column.
     movies["features"] = (
@@ -201,6 +256,30 @@ def _fit_vectors(movies: pd.DataFrame, *, large: bool = False):
 @lru_cache(maxsize=1)
 def _catalog_and_vectors():
     """Load the active catalog and build TF-IDF once per process."""
+    if DATA_FILE == KAGGLE_CATALOG and VECTOR_MANIFEST.exists():
+        try:
+            manifest = json.loads(VECTOR_MANIFEST.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError("Invalid index manifest.")
+            if (
+                manifest.get("catalog_sha256") != file_sha256(KAGGLE_CATALOG)
+                or manifest.get("vectors_sha256") != file_sha256(VECTOR_FILE)
+            ):
+                raise ValueError("Index does not match the catalog.")
+            movies = _read_catalog(build_features=False)
+            pa.default_memory_pool().release_unused()
+            vectors = load_prepared_vectors(
+                VECTOR_FILE, manifest["vectors_sha256"]
+            )
+            if vectors.shape != (len(movies), manifest["columns"]):
+                raise ValueError("Index dimensions do not match the catalog.")
+        except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
+            raise CatalogError(
+                "The prepared recommendation index is missing or out of date. "
+                "Run python scripts/build_recommendation_index.py and restart the app."
+            ) from error
+        return movies, vectors
+
     movies = _read_catalog()
     return movies, _fit_vectors(movies, large=DATA_FILE == KAGGLE_CATALOG)
 

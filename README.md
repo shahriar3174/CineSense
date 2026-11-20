@@ -1,6 +1,6 @@
 # CineSense Proof of Concept
 
-**Live demo:** [Open CineSense](https://cinesensemovierecommender.streamlit.app/) — deployed from this personal repository.
+**Live demo:** [Open CineSense](https://cinesensemovierecommender.streamlit.app/) â€” deployed from this personal repository.
 
 CineSense is a content-based movie recommender for the CIS 3296 course project. The application uses the full Kaggle TMDB catalog.
 
@@ -64,13 +64,19 @@ To refresh it manually, download the ZIP from [TMDB Movies on Kaggle](https://ww
 python scripts/import_kaggle_catalog.py path/to/tmdb-movies-dataset.zip
 ```
 
-Restart the app after replacing the catalog. The first request builds the TF-IDF index and requires more time and memory than subsequent requests. Updates require a new import and commit.
+After replacing the catalog, rebuild the prepared TF-IDF index locally before deploying:
+
+```bash
+python scripts/build_recommendation_index.py
+```
+
+Commit the updated catalog, `data/tmdb_vectors.npz`, and `data/tmdb_vectors.json` together. The catalog and sparse index are tracked with Git LFS. The app verifies their checksums before loading, so an old index cannot silently be used with a newer catalog. Updates require a new import, index build, and commit.
 
 ## Host on Streamlit Community Cloud
 
 Connect this personal repository and deploy branch `main` with entry point `app.py`. Streamlit Community Cloud supports Git LFS. Confirm that the deployment downloads the full catalog and that its page reports **1,537,332 movies (Kaggle TMDB)**.
 
-The full catalog has been verified locally. Validate memory usage and startup in the hosted deployment before the class demo. See [dataset provenance](docs/data_source.md).
+The deployed app loads a prepared sparse TF-IDF index and uses Arrow-backed strings to reduce startup memory. The full catalog and index have been verified locally. Validate memory usage and startup in the hosted deployment before the class demo. See [dataset provenance](docs/data_source.md).
 
 ## Run
 
@@ -122,7 +128,7 @@ TMDB_API_KEY = "your-api-key"
 
 Alternatively, use `TMDB_ACCESS_TOKEN = "your-read-access-token"`. Environment variables with the same names are also supported. The secrets file is excluded from Git.
 
-For Streamlit Community Cloud, add the credential through **App settings → Secrets**. Recommendations continue to work when availability is unconfigured or TMDB cannot be reached. API requests use existing TMDB movie IDs.
+For Streamlit Community Cloud, add the credential through **App settings â†’ Secrets**. Recommendations continue to work when availability is unconfigured or TMDB cannot be reached. API requests use existing TMDB movie IDs.
 
 ## Tests
 
