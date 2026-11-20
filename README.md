@@ -70,13 +70,13 @@ After replacing the catalog, rebuild the prepared TF-IDF index locally before de
 python scripts/build_recommendation_index.py
 ```
 
-Commit the updated catalog, `data/tmdb_vectors.npz`, and `data/tmdb_vectors.json` together. The catalog and sparse index are tracked with Git LFS. The app verifies their checksums before loading, so an old index cannot silently be used with a newer catalog. Updates require a new import, index build, and commit.
+Commit the updated catalog, `data/tmdb_vectors.npz`, `data/tmdb_catalog.feather.gz`, and `data/tmdb_vectors.json` together. The compressed catalog, prepared metadata, and sparse index are tracked with Git LFS. The app verifies their checksums before loading, so an old index cannot silently be used with a newer catalog. Updates require a new import, index build, and commit.
 
 ## Host on Streamlit Community Cloud
 
 Connect this personal repository and deploy branch `main` with entry point `app.py`. Streamlit Community Cloud supports Git LFS. Confirm that the deployment downloads the full catalog and that its page reports **1,537,332 movies (Kaggle TMDB)**.
 
-The deployed app loads a prepared sparse TF-IDF index and uses Arrow-backed strings to reduce startup memory. The full catalog and index have been verified locally. Validate memory usage and startup in the hosted deployment before the class demo. See [dataset provenance](docs/data_source.md).
+The deployed app maps prepared Arrow metadata and sparse TF-IDF arrays from disk to reduce startup memory. The full catalog and index have been verified locally. Validate memory usage and startup in the hosted deployment before the class demo. See [dataset provenance](docs/data_source.md).
 
 ## Run
 

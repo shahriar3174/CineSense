@@ -5,6 +5,7 @@ from pathlib import Path
 import argparse
 import hashlib
 import gc
+import gzip
 import json
 import shutil
 import tempfile
@@ -16,6 +17,7 @@ from random import seed
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.feather as feather
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import csr_matrix
@@ -24,6 +26,7 @@ DATA_DIR = Path(__file__).parent / "data"
 KAGGLE_CATALOG = DATA_DIR / "movies_tmdb_kaggle.csv.gz"
 DATA_FILE = KAGGLE_CATALOG
 VECTOR_FILE = DATA_DIR / "tmdb_vectors.npz"
+METADATA_FILE = DATA_DIR / "tmdb_catalog.feather.gz"
 VECTOR_MANIFEST = DATA_DIR / "tmdb_vectors.json"
 _INDEX_LOCK = Lock()
 
@@ -36,6 +39,24 @@ def file_sha256(path: Path) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
+
+
+def load_prepared_metadata(path: Path, checksum: str) -> pd.DataFrame:
+    """Expand metadata once on disk, then map its strings without a large CSV parse."""
+    directory = Path(tempfile.gettempdir()) / "cinesense-tfidf" / checksum
+    destination = directory / "catalog.feather"
+    with _INDEX_LOCK:
+        if not destination.exists():
+            directory.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_suffix(".tmp")
+            try:
+                with gzip.open(path, "rb") as source, temporary.open("wb") as target:
+                    shutil.copyfileobj(source, target, length=1024 * 1024)
+                temporary.replace(destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+    table = feather.read_table(destination, memory_map=True)
+    return table.to_pandas(types_mapper=pd.ArrowDtype)
 
 
 def load_prepared_vectors(path: Path, checksum: str):
@@ -267,7 +288,14 @@ def _catalog_and_vectors():
                 or manifest.get("vectors_sha256") != file_sha256(VECTOR_FILE)
             ):
                 raise ValueError("Index does not match the catalog.")
-            movies = _read_catalog(build_features=False)
+            if "metadata_sha256" in manifest:
+                if file_sha256(METADATA_FILE) != manifest["metadata_sha256"]:
+                    raise ValueError("Metadata does not match the prepared index.")
+                movies = load_prepared_metadata(METADATA_FILE, manifest["metadata_sha256"])
+                if not (_REQUIRED_COLUMNS | {"movie_id"}).issubset(movies.columns):
+                    raise ValueError("Prepared metadata is missing required columns.")
+            else:
+                movies = _read_catalog(build_features=False)
             gc.collect()
             pa.default_memory_pool().release_unused()
             vectors = load_prepared_vectors(
