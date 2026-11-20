@@ -4,6 +4,7 @@
 from pathlib import Path
 import argparse
 import hashlib
+import gc
 import json
 import shutil
 import tempfile
@@ -267,6 +268,7 @@ def _catalog_and_vectors():
             ):
                 raise ValueError("Index does not match the catalog.")
             movies = _read_catalog(build_features=False)
+            gc.collect()
             pa.default_memory_pool().release_unused()
             vectors = load_prepared_vectors(
                 VECTOR_FILE, manifest["vectors_sha256"]
