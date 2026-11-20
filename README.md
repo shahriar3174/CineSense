@@ -110,7 +110,7 @@ Genre matching ignores capitalization. Repeat `--genre` to match any of the sele
 python -m streamlit run app.py
 ```
 
-Streamlit opens the page in your browser. It shows the active dataset and movie count. Pick a movie, optionally select genres and a release year range under **Filter recommendations**, then select **Get Recommendations**. Clear the genre selection to include all genres. Press **Ctrl + C** in the terminal to stop the server.
+Streamlit opens the page in your browser. It shows the active dataset and movie count. Type any part of a title and click a matching suggestion, optionally select genres and a release year range under **Filter recommendations**, then select **Get Recommendations**. Clear the genre selection to include all genres. Press **Ctrl + C** in the terminal to stop the server.
 
 When you're done, run `deactivate` to leave the virtual environment.
 

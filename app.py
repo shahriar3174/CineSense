@@ -17,6 +17,9 @@ import os
 from pathlib import Path
 
 import streamlit as st
+from streamlit_searchbox import st_searchbox
+
+from movie_search import find_movie_matches
 
 from watch_providers import AvailabilityError, country_offers, get_movie_providers, get_regions
 
@@ -82,39 +85,31 @@ st.caption(f"Catalog: {len(movies):,} movies ({catalog_name}).")
 st.caption("Source: [TMDB Movies on Kaggle](https://www.kaggle.com/datasets/asaniczka/tmdb-movies-dataset-2023-930k-movies).")
 st.caption("Data by asaniczka / TMDB, available under the [ODC Attribution License](https://opendatacommons.org/licenses/by/1-0/). This product uses the TMDB API but is not endorsed or certified by TMDB.")
 
-query = st.text_input(
-    "Search movie titles", placeholder="e.g. The Matrix",
-    help="Enter at least two characters and press Enter, then select a matching movie below.",
-).strip()
-options = movies.iloc[:0]
-if len(query) >= 2:
-    matches = movies["title"].str.contains(query, case=False, regex=False)
-    options = movies.loc[matches, ["movie_id", "title", "year"]].head(100)
-    if options.empty:
-        st.info("No matching titles. Try another search.")
-    elif matches.sum() > len(options):
-        st.caption("Showing the first 100 matches. Type more to narrow your search.")
-else:
-    st.caption("Type at least two characters above and press Enter to populate the Movie title dropdown.")
+def search_movie_titles(query):
+    # Editing a search clears the previous choice until a new match is selected.
+    st.session_state["movie_search"]["result"] = None
+    return find_movie_matches(query, movies)
 
-labels = {
-    row.movie_id: f"{row.title} ({row.year or 'year unknown'})"
-    for row in options.itertuples()
-}
-feature_description = "genres, keywords, and plot text"
-movie_id = st.selectbox(
-    "Movie title",
-    options=list(labels),
-    format_func=labels.get,
-    index=None,
-    placeholder=(
-        "Search above and press Enter first" if len(query) < 2
-        else "No matches — change the search above" if not labels
-        else "Select a matching movie…"
-    ),
-    disabled=not labels,
-    help="Pick the movie you want recommendations for. For Kaggle catalogs, search in the box above first.",
+
+movie_id = st_searchbox(
+    search_movie_titles,
+    label="Search movie titles",
+    placeholder="Type a title, e.g. Batman",
+    help="Matches appear as you type. Click a movie title to select it.",
+    debounce=300,
+    clear_on_submit=False,
+    edit_after_submit="option",
+    key="movie_search",
 )
+selected = movies.loc[movies["movie_id"] == movie_id, ["title", "year"]]
+labels = {}
+if movie_id is not None and not selected.empty:
+    selected_movie = selected.iloc[0]
+    labels[movie_id] = f"{selected_movie['title']} ({selected_movie['year'] or 'year unknown'})"
+    st.caption(f"Selected movie: {labels[movie_id]}")
+else:
+    movie_id = None
+feature_description = "genres, keywords, and plot text"
 
 # ── Optional genre and year filters ──────────────────────────────────
 with st.expander("🔎 Filter recommendations (optional)", expanded=False):
@@ -179,7 +174,7 @@ if get_recs:
     if movie_id is None:
         st.warning(
             "**No movie selected.** "
-            "Please choose a movie from the dropdown above, "
+            "Please click a matching title in the search box above, "
             "then press **Get Recommendations** again."
         )
         st.stop()
