@@ -1,13 +1,15 @@
 # Movie catalog source
 
-The 4,803-row `data/movies_tmdb.csv` is a reduced copy of Kaggle's [TMDB 5000 Movie Dataset](https://www.kaggle.com/datasets/tmdb/tmdb-movie-metadata), version 2 (last updated September 28, 2017; downloaded November 5, 2026). Kaggle says its source is [The Movie Database (TMDB)](https://www.themoviedb.org/). This product uses the TMDB API but is not endorsed or certified by TMDB.
+## Full Kaggle TMDB catalog
 
-The source archive contains `tmdb_5000_movies.csv` and `tmdb_5000_credits.csv`. `scripts/build_tmdb_catalog.py` joins them by movie ID, discards rows with missing or repeated IDs or titles, and writes only the fields CineSense uses: ID, title, release year, genres, keywords, first five cast members, director, and plot overview. The original ZIP is not needed to run the app. To rebuild the CSV, download the dataset from Kaggle and run:
+`data/movies_tmdb_kaggle.csv.gz` is a derived catalog of asaniczka's [Full TMDB Movies Dataset](https://www.kaggle.com/datasets/asaniczka/tmdb-movies-dataset-2023-930k-movies), sourced from TMDB. Downloaded November 13, 2026; Kaggle metadata reported version 1119, last updated November 13, 2026 at 06:05 UTC. The downloaded archive contains `TMDB_movie_dataset_v11.csv`.
 
-```bash
-python scripts/build_tmdb_catalog.py path/to/tmdb-movie-metadata.zip
-```
+Source ZIP SHA-256: `d20b15edb590c15b4b3b9345bfc64e718135a3779237b3a95b99d0f4fceb6cc7`.
 
-This is an older snapshot, so new films are absent and some metadata may be incomplete. Four records have no overview; the recommender can still compare their other fields. The original 30-movie sample remains available when `data/movies_tmdb.csv` is absent. Future API integration would need a TMDB API credential and its own caching, error handling, and attribution review.
+Kaggle identifies the dataset license as [ODC Attribution License (ODC-By) 1.0](https://opendatacommons.org/licenses/by/1-0/). Credit: asaniczka and The Movie Database (TMDB). This derived catalog retains that attribution; the app also displays source and license links. This product uses the TMDB API but is not endorsed or certified by TMDB.
 
-See [TMDB's API FAQ](https://developer.themoviedb.org/docs/faq) for its current noncommercial use and attribution terms. The Kaggle dataset labels its license as "Other (specified in description)" and links to TMDB's terms; do not assume it is unrestricted public-domain data.
+The full catalog contains 1,537,332 records with valid unique numeric movie IDs and nonblank titles. The importer retains movie ID, title, year, genres, keywords, and overview. Cast and director are unavailable in this source and remain blank. Some records have missing genres or plot text, so recommendation coverage varies.
+
+The compressed full catalog is stored in `data/movies_tmdb_kaggle.csv.gz` using Git LFS. Download it with `git lfs pull` after cloning. Rebuild it from the source archive using `python scripts/import_kaggle_catalog.py path/to/tmdb-movies-dataset.zip`.
+
+This is a snapshot downloaded November 13, 2026. Refreshing requires importing a newer archive and committing the replacement. The app uses this full catalog exclusively.

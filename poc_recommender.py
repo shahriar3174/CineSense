@@ -12,13 +12,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 DATA_DIR = Path(__file__).parent / "data"
-LARGE_CATALOG = DATA_DIR / "movies_tmdb.csv"
-SAMPLE_CATALOG = DATA_DIR / "movies_sample.csv"
 KAGGLE_CATALOG = DATA_DIR / "movies_tmdb_kaggle.csv.gz"
-DATA_FILE = next(
-    (path for path in (KAGGLE_CATALOG, LARGE_CATALOG) if path.exists()),
-    SAMPLE_CATALOG,
-)
+DATA_FILE = KAGGLE_CATALOG
 
 # ---------------------------------------------------------------------------
 # Custom exception hierarchy — gives the UI layer enough context to show
@@ -71,13 +66,17 @@ class MovieNotFoundError(SelectionError):
 class NoEligibleResultsError(CineSenseError):
     """Ranking succeeded but filters eliminated every candidate."""
 
-    def __init__(self, *, has_year_filter: bool = False) -> None:
+    def __init__(
+        self, *, has_year_filter: bool = False, has_genre_filter: bool = False
+    ) -> None:
         self.has_year_filter = has_year_filter
-        hint = (
-            " Try widening or removing the year filter."
-            if has_year_filter
-            else " Try choosing a different movie."
-        )
+        self.has_genre_filter = has_genre_filter
+        suggestions = []
+        if has_year_filter:
+            suggestions.append("widening or removing the year filter")
+        if has_genre_filter:
+            suggestions.append("removing or changing the genre filter")
+        hint = " Try " + (" or ".join(suggestions) or "choosing a different movie") + "."
         super().__init__(
             "No recommendations match the current criteria." + hint
         )
@@ -150,7 +149,7 @@ def _read_catalog(path: Path | None = None) -> pd.DataFrame:
     if not source.exists():
         raise CatalogNotFoundError(
             f"Cannot find the movie catalog at {source}. "
-            "Make sure the data file is present and the path is correct."
+            "Run git lfs pull in the repository folder to download the full catalog."
         )
 
     try:
@@ -215,6 +214,17 @@ def load_movies(path: Path | None = None) -> pd.DataFrame:
     return _catalog_and_vectors()[0].copy()
 
 
+def available_genres() -> list[str]:
+    """Return sorted, unique, nonblank genres from the active catalog."""
+    movies, _ = _catalog_and_vectors()
+    return sorted({
+        genre.strip()
+        for value in movies["genres"]
+        for genre in value.split("|")
+        if genre.strip()
+    })
+
+
 def shared_attributes(seed, other) -> dict:
     """Return the genres, keywords, cast, and director two movies have in common."""
     shared = {}
@@ -234,8 +244,9 @@ def recommend(
     min_year: int | None = None,
     max_year: int | None = None,
     movie_id: str | None = None,
+    genres: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Rank similar movies by stable ID or title, with optional year filtering."""
+    """Rank similar movies with inclusive year and any-match genre filters."""
     selection = movie_id if movie_id is not None else title
     if not selection or not selection.strip():
         raise MissingSelectionError(
@@ -272,9 +283,21 @@ def recommend(
         if max_year is not None:
             eligible &= years <= max_year
 
+    has_genre_filter = bool(genres)
+    if has_genre_filter:
+        requested_genres = {genre.strip().casefold() for genre in genres}
+        eligible &= movies["genres"].map(
+            lambda value: any(
+                genre.strip().casefold() in requested_genres
+                for genre in value.split("|") if genre.strip()
+            )
+        ).to_numpy()
+
     eligible_indices = np.flatnonzero(eligible)
     if not eligible_indices.size:
-        raise NoEligibleResultsError(has_year_filter=has_year_filter)
+        raise NoEligibleResultsError(
+            has_year_filter=has_year_filter, has_genre_filter=has_genre_filter
+        )
 
     order = np.argsort(-scores[eligible_indices], kind="stable")
     best_indices = eligible_indices[order[:limit]]
@@ -302,15 +325,21 @@ def main() -> None:
     parser.add_argument("--movie-id", help="Select a movie by its catalog ID")
     parser.add_argument("--min-year", type=int)
     parser.add_argument("--max-year", type=int)
+    parser.add_argument(
+        "--genre", action="append", dest="genres",
+        help="Include movies matching any selected genre (repeatable)",
+    )
 
     args = parser.parse_args()
+    title = args.title or ("The Matrix" if args.movie_id is None else None)
 
     try:
         results = recommend(
-            title,
+            title=title,
             min_year=args.min_year,
             max_year=args.max_year,
-            movie_id=movie_id,
+            movie_id=args.movie_id,
+            genres=args.genres,
         )
     except ValueError as error:
         parser.error(str(error))
@@ -324,7 +353,7 @@ def main() -> None:
     if len(results) < 5:
         print(
             f"Only {len(results)} recommendation(s) found "
-            f"for {args.title}."
+            f"for {args.movie_id or title}."
         )
 
     for number, movie in results.iterrows():
